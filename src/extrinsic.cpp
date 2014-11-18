@@ -1,6 +1,8 @@
 #include <cmath>
 #include <ras_utils/ras_utils.h>
 #include <ras_utils/basic_node.h>
+#include <iostream>
+#include <fstream>
 //ROS
 #include "ros/ros.h"
 #include <image_transport/image_transport.h>
@@ -31,11 +33,6 @@
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 
-#define ROI_X_MIN   300
-#define ROI_X_MAX   500
-#define ROI_Y_MIN   300
-#define ROI_Y_MAX   480
-
 // ** Camera intrinsics (from /camera/depth_registered/camera_info topic)
 #define FX              574.0527954101562
 #define FY              574.0527954101562
@@ -46,6 +43,11 @@
 #define IMG_ROWS        480
 #define IMG_COLS        640
 
+#define ROI_X_MIN   0 //300
+#define ROI_X_MAX   640//500
+#define ROI_Y_MIN   0//300
+#define ROI_Y_MAX   480
+
 class Extrinsic_Calibration : rob::BasicNode
 {
 public:
@@ -55,6 +57,7 @@ public:
     typedef message_filters::Synchronizer<RGBD_Sync_Policy> RGBD_Sync;
 
     Extrinsic_Calibration();
+    bool finished(){return finished_;}
 private:
     ros::Subscriber pcl_sub_;
 
@@ -66,7 +69,7 @@ private:
     Eigen::Matrix3f R_;
     Eigen::Vector3f pos_3D_world_;
 
-    bool computed_t_, computed_R_;
+    bool computed_t_, computed_R_, finished_;
 
     cv::Mat ROI_;
 
@@ -85,6 +88,8 @@ private:
 
     void extractCorners(const cv::Mat &bgr, const cv::Mat &ROI, std::vector<cv::Point> &corners);
     void compute_t(const std::vector<cv::Point> &corners, const cv::Mat &depth_img, Eigen::Vector3f pos_3D, Eigen::Matrix3f rot_3D);
+
+    void save_to_file(const std::string &path, const Eigen::Matrix4f &transform);
 };
 
 
@@ -93,15 +98,18 @@ int main(int argc, char* argv[])
     // ** Init node
     ros::init(argc, argv, "extrinsic_calibration");
 
-    // ** Create object recognition object
     Extrinsic_Calibration ec;
 
-    ros::spin();
+    while(!ec.finished())
+    {
+        ros::spinOnce();
+    }
+
     return 0;
 }
 
 Extrinsic_Calibration::Extrinsic_Calibration()
-    :computed_t_(false), computed_R_(false), n_frames_(0)
+    :computed_t_(false), computed_R_(false), n_frames_(0), finished_(false)
 {
     // ** Subscriber
     // PCL
@@ -109,8 +117,8 @@ Extrinsic_Calibration::Extrinsic_Calibration()
             ("/camera/depth_registered/points", 2, &Extrinsic_Calibration::PCL_Callback,this);
 
     // RGBD
-    rgb_sub_.subscribe(n, "/camera/rgb/image_raw", 2);
-    depth_sub_.subscribe(n, "/camera/depth_registered/image_raw",2);
+    rgb_sub_.subscribe(n, "/camera/rgb/image_rect_color", 2);
+    depth_sub_.subscribe(n, "/camera/depth_registered/hw_registered/image_rect_raw",2);
 
     rgbd_sync_.reset(new RGBD_Sync(RGBD_Sync_Policy(2), rgb_sub_, depth_sub_));
     rgbd_sync_->registerCallback(boost::bind(&Extrinsic_Calibration::RGBD_Callback, this, _1, _2));
@@ -152,7 +160,13 @@ void Extrinsic_Calibration::PCL_Callback(const pcl::PointCloud<pcl::PointXYZRGB>
         // ** Transform point cloud
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_transformed (new pcl::PointCloud<pcl::PointXYZRGB>);
         Eigen::Matrix4f t_inv = transform.inverse();
+        std::cout << "Transform: "<<std::endl;
+        std::cout << t_inv << std::endl;
+        pcl::io::savePCDFile("/home/carlos/test_build.pcd", *pcl_msg);
         pcl::transformPointCloud(*pcl_msg, *cloud_transformed, t_inv);
+
+        // ** Save to file
+        save_to_file(RAS_Names::CALIBRATION_PATH, t_inv);
 
         // ** Visualize
         boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer (new pcl::visualization::PCLVisualizer ("3D Viewer"));
@@ -161,6 +175,8 @@ void Extrinsic_Calibration::PCL_Callback(const pcl::PointCloud<pcl::PointXYZRGB>
         viewer->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 3, "sample cloud");
         viewer->addCoordinateSystem (1.0);
         viewer->spin();
+
+        finished_ = true;
     }
 }
 
@@ -168,7 +184,7 @@ void Extrinsic_Calibration::RGBD_Callback(const sensor_msgs::Image::ConstPtr &rg
                                           const sensor_msgs::Image::ConstPtr &depth_msg)
 {
     ROS_INFO("%d", n_frames_);
-    if(n_frames_ > 50 && computed_R_)
+    if(n_frames_ > 50)
     {
         // ** Convert to OpenCV format
         cv_bridge::CvImageConstPtr rgb_ptr   = cv_bridge::toCvShare(rgb_msg);
@@ -177,15 +193,15 @@ void Extrinsic_Calibration::RGBD_Callback(const sensor_msgs::Image::ConstPtr &rg
         const cv::Mat& rgb_img     = rgb_ptr->image;
         const cv::Mat& depth_img   = depth_ptr->image;
 
-//        cv::imshow("RGB ROI", rgb_roi);
-//        cv::waitKey();
+        if(computed_R_)
+        {
+            // ** Extract 4 strongest corners
+            std::vector<cv::Point> corners;
+            extractCorners(rgb_img, ROI_, corners);
 
-        // ** Extract 4 strongest corners
-        std::vector<cv::Point> corners;
-        extractCorners(rgb_img, ROI_, corners);
-
-        // ** Get 3D position (in camera frame)
-        compute_t(corners, depth_img, pos_3D_world_, R_);
+            // ** Get 3D position (in camera frame)
+            compute_t(corners, depth_img, pos_3D_world_, R_);
+        }
     }
     else
         ++n_frames_;
@@ -243,8 +259,6 @@ void Extrinsic_Calibration::computeTransformation(double theta_x, Eigen::Matrix4
         // Final transformation
         transform <<  R_   , t_,
                     0,0,0  , 1;
-        std::cout << transform << std::endl;
-        transform;
     }
 }
 
@@ -263,8 +277,8 @@ void Extrinsic_Calibration::extractCorners(const cv::Mat &bgr, const cv::Mat &RO
     {
         cv::circle(bgr2, corners[i], 5,  cv::Scalar(0,0,255));
     }
-//    cv::imshow("Corners",bgr2);
-//    cv::waitKey();
+    cv::imshow("Corners",bgr2);
+    cv::waitKey();
 }
 
 void Extrinsic_Calibration::compute_t(const std::vector<cv::Point> &corners,
@@ -296,4 +310,18 @@ void Extrinsic_Calibration::compute_t(const std::vector<cv::Point> &corners,
     t_(2,0) = Z - rot_3D(2,0)*pos_3D(0,0) - rot_3D(2,1)*pos_3D(1,0) - rot_3D(2,2)*pos_3D(2,0);
 
     computed_t_ = true;
+}
+
+void Extrinsic_Calibration::save_to_file(const std::string &path, const Eigen::Matrix4f &transform)
+{
+    std::ofstream file;
+    file.open(path);
+    for(unsigned int i = 0; i < 4; ++i)
+    {
+        for(unsigned int j = 0; j<4; ++j)
+        {
+            file << transform(i,j)<<std::endl;
+        }
+    }
+    file.close();
 }

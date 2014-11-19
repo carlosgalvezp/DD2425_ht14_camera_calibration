@@ -48,6 +48,8 @@
 #define ROI_Y_MIN   0//300
 #define ROI_Y_MAX   480
 
+#define REFERENCE_X_POSITION 0.115 + 0.1 // [m]
+
 class Extrinsic_Calibration : rob::BasicNode
 {
 public:
@@ -134,7 +136,7 @@ Extrinsic_Calibration::Extrinsic_Calibration()
     }
 
     // ** Define position in 3D world coordinates
-    pos_3D_world_ << 0.197, 0.0, 0.0;
+    pos_3D_world_ << REFERENCE_X_POSITION, 0.0, 0.0;
 }
 
 void Extrinsic_Calibration::PCL_Callback(const pcl::PointCloud<pcl::PointXYZRGB>::ConstPtr &pcl_msg)
@@ -162,7 +164,6 @@ void Extrinsic_Calibration::PCL_Callback(const pcl::PointCloud<pcl::PointXYZRGB>
         Eigen::Matrix4f t_inv = transform.inverse();
         std::cout << "Transform: "<<std::endl;
         std::cout << t_inv << std::endl;
-        pcl::io::savePCDFile("/home/carlos/test_build.pcd", *pcl_msg);
         pcl::transformPointCloud(*pcl_msg, *cloud_transformed, t_inv);
 
         // ** Save to file
@@ -291,8 +292,8 @@ void Extrinsic_Calibration::compute_t(const std::vector<cv::Point> &corners,
     for(std::size_t i = 0; i < corners.size(); ++i)
     {
         const cv::Point &p = corners[i];
-        x += p.y; // For cv::Point, p.x means rows, p.y means cols. For us, X means cols, Y means rows
-        y += p.x;
+        x += p.x; // For cv::Point, p.x means rows, p.y means cols. For us, X means cols, Y means rows
+        y += p.y;
     }
     x /= corners.size();
     y /= corners.size();

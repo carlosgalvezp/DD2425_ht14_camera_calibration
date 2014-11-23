@@ -11,7 +11,7 @@ find_package(catkin REQUIRED COMPONENTS
   ras_utils
   roscpp
   rospy
-  std_msgs
+  std_msgs  
 message_filters
 )
 

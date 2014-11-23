@@ -48,7 +48,7 @@
 #define ROI_Y_MIN   0//300
 #define ROI_Y_MAX   480
 
-#define REFERENCE_X_POSITION 0.115 + 0.1 // [m]
+#define REFERENCE_X_POSITION 0.115 + 0.197 // [m]
 
 class Extrinsic_Calibration : rob::BasicNode
 {
@@ -292,7 +292,7 @@ void Extrinsic_Calibration::compute_t(const std::vector<cv::Point> &corners,
     for(std::size_t i = 0; i < corners.size(); ++i)
     {
         const cv::Point &p = corners[i];
-        x += p.x; // For cv::Point, p.x means rows, p.y means cols. For us, X means cols, Y means rows
+        x += p.x;
         y += p.y;
     }
     x /= corners.size();

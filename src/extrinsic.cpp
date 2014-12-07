@@ -53,6 +53,8 @@
 #define ROI_Y_MIN   0//300
 #define ROI_Y_MAX   480
 
+#define REFERENCE_X_POSITION 0.115 + 0.197 // [m]
+
 class Extrinsic_Calibration : rob::BasicNode
 {
 public:
@@ -140,7 +142,7 @@ Extrinsic_Calibration::Extrinsic_Calibration()
     }
 
     // ** Define position in 3D world coordinates
-    pos_robot_frame_ << 0.197, 0.0, 0.0;
+    pos_robot_frame_ << REFERENCE_X_POSITION, 0.0, 0.0;
 }
 
 void Extrinsic_Calibration::PCL_Callback(const pcl::PointCloud<pcl::PointXYZRGB>::ConstPtr &pcl_msg)
@@ -287,14 +289,12 @@ void Extrinsic_Calibration::compute_t(const std::vector<cv::Point> &corners,
     x /= corners.size();
     y /= corners.size();
 
-    std::cout << "x: "<<x <<", y:" << y<<std::endl;
     // ** Compute 3D position (camera optical frame)
     double X, Y, Z;
     Z = depth_img.at<float>(y, x);
     X = Z * ((x - CX) * FX_INV);
     Y = Z * ((y - CY) * FY_INV);
 
-    std::cout << "POINT OPTICAL COORDINATES: "<<X<<","<<Y<<","<<Z<<std::endl;
     // ** Transform into camera link coordinates
     pcl::PointXYZ p(X,Y,Z);
     tf::Transform t_rgb_optical_to_camera_link;
@@ -306,8 +306,6 @@ void Extrinsic_Calibration::compute_t(const std::vector<cv::Point> &corners,
     X = p.x;
     Y = p.y;
     Z = p.z;
-
-    std::cout << "POINT CAMERA LINK COORDINATES: "<<X<<","<<Y<<","<<Z<<std::endl;
 
     // ** Compute T
     t_(0,0) = pos_3D(0,0) - rot_3D(0,0)*X - rot_3D(0,1)*Y - rot_3D(0,2)*Z;

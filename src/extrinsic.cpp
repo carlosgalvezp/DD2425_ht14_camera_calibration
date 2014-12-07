@@ -1,6 +1,7 @@
 #include <cmath>
 #include <ras_utils/ras_utils.h>
 #include <ras_utils/basic_node.h>
+#include <ras_utils/pcl_utils.h>
 #include <iostream>
 #include <fstream>
 //ROS
@@ -12,6 +13,8 @@
 #include <message_filters/time_synchronizer.h>
 #include <cv_bridge/cv_bridge.h>
 #include <message_filters/subscriber.h>
+#include <tf/tf.h>
+#include <tf/transform_listener.h>
 
 // Eigen
 #include <Eigen/Core>
@@ -32,6 +35,8 @@
 // OpenCV
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
+
+
 
 // ** Camera intrinsics (from /camera/depth_registered/camera_info topic)
 #define FX              574.0527954101562
@@ -67,13 +72,14 @@ private:
 
     Eigen::Vector3f t_;
     Eigen::Matrix3f R_;
-    Eigen::Vector3f pos_3D_world_;
+    Eigen::Vector3f pos_robot_frame_;
 
     bool computed_t_, computed_R_, finished_;
 
     cv::Mat ROI_;
 
     int n_frames_;
+    tf::TransformListener tf_listener_;
     /**
      * @brief Callback to process registered point cloud
      * @param pcl_msg
@@ -134,7 +140,7 @@ Extrinsic_Calibration::Extrinsic_Calibration()
     }
 
     // ** Define position in 3D world coordinates
-    pos_3D_world_ << 0.197, 0.0, 0.0;
+    pos_robot_frame_ << 0.197, 0.0, 0.0;
 }
 
 void Extrinsic_Calibration::PCL_Callback(const pcl::PointCloud<pcl::PointXYZRGB>::ConstPtr &pcl_msg)
@@ -156,26 +162,10 @@ void Extrinsic_Calibration::PCL_Callback(const pcl::PointCloud<pcl::PointXYZRGB>
     computeTransformation(theta, transform);
 
     if(computed_t_)
-    {
-        // ** Transform point cloud
-        pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_transformed (new pcl::PointCloud<pcl::PointXYZRGB>);
-        Eigen::Matrix4f t_inv = transform.inverse();
-        std::cout << "Transform: "<<std::endl;
-        std::cout << t_inv << std::endl;
-        pcl::io::savePCDFile("/home/carlos/test_build.pcd", *pcl_msg);
-        pcl::transformPointCloud(*pcl_msg, *cloud_transformed, t_inv);
-
+    {        
         // ** Save to file
-        save_to_file(RAS_Names::CALIBRATION_PATH, t_inv);
-
-        // ** Visualize
-        boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer (new pcl::visualization::PCLVisualizer ("3D Viewer"));
-        pcl::visualization::PointCloudColorHandlerRGBField<pcl::PointXYZRGB> rgb(cloud_transformed);
-        viewer->addPointCloud<pcl::PointXYZRGB> (cloud_transformed, rgb, "sample cloud");
-        viewer->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 3, "sample cloud");
-        viewer->addCoordinateSystem (1.0);
-        viewer->spin();
-
+        save_to_file(RAS_Names::CALIBRATION_PATH, transform);
+        std::cout<< "Transform: \n"<<transform<<std::endl;
         finished_ = true;
     }
 }
@@ -184,7 +174,7 @@ void Extrinsic_Calibration::RGBD_Callback(const sensor_msgs::Image::ConstPtr &rg
                                           const sensor_msgs::Image::ConstPtr &depth_msg)
 {
     ROS_INFO("%d", n_frames_);
-    if(n_frames_ > 50)
+    if(n_frames_ > 50 && !finished_)
     {
         // ** Convert to OpenCV format
         cv_bridge::CvImageConstPtr rgb_ptr   = cv_bridge::toCvShare(rgb_msg);
@@ -200,7 +190,7 @@ void Extrinsic_Calibration::RGBD_Callback(const sensor_msgs::Image::ConstPtr &rg
             extractCorners(rgb_img, ROI_, corners);
 
             // ** Get 3D position (in camera frame)
-            compute_t(corners, depth_img, pos_3D_world_, R_);
+            compute_t(corners, depth_img, pos_robot_frame_, R_);
         }
     }
     else
@@ -230,13 +220,13 @@ void Extrinsic_Calibration::extractPlane(const pcl::PointCloud<pcl::PointXYZRGB>
     }
 }
 
-void Extrinsic_Calibration::computeTransformation(double theta_x, Eigen::Matrix4f &transform)
+void Extrinsic_Calibration::computeTransformation(double theta, Eigen::Matrix4f &transform)
 {
     // 3D rotations
-    Eigen::Matrix3f rx, ry, rz, R;
-    theta_x += M_PI/2.0;
-    double theta_y = 0;
-    double theta_z = M_PI/2.0;
+    Eigen::Matrix3f rx, ry, rz;
+    double theta_x = 0;
+    double theta_y = theta;
+    double theta_z = 0;
 
     rx << 1,          0,           0,
           0, cos(theta_x), -sin(theta_x),
@@ -291,23 +281,38 @@ void Extrinsic_Calibration::compute_t(const std::vector<cv::Point> &corners,
     for(std::size_t i = 0; i < corners.size(); ++i)
     {
         const cv::Point &p = corners[i];
-        x += p.y; // For cv::Point, p.x means rows, p.y means cols. For us, X means cols, Y means rows
-        y += p.x;
+        x += p.x;
+        y += p.y;
     }
     x /= corners.size();
     y /= corners.size();
 
     std::cout << "x: "<<x <<", y:" << y<<std::endl;
-    // ** Compute 3D position (camera frame)
+    // ** Compute 3D position (camera optical frame)
     double X, Y, Z;
     Z = depth_img.at<float>(y, x);
     X = Z * ((x - CX) * FX_INV);
     Y = Z * ((y - CY) * FY_INV);
 
+    std::cout << "POINT OPTICAL COORDINATES: "<<X<<","<<Y<<","<<Z<<std::endl;
+    // ** Transform into camera link coordinates
+    pcl::PointXYZ p(X,Y,Z);
+    tf::Transform t_rgb_optical_to_camera_link;
+    PCL_Utils::readTransform(COORD_FRAME_CAMERA_LINK, COORD_FRAME_CAMERA_RGB_OPTICAL, this->tf_listener_, t_rgb_optical_to_camera_link);
+    Eigen::Matrix4f eigen_tf;
+    PCL_Utils::convertTransformToEigen4x4(t_rgb_optical_to_camera_link, eigen_tf);
+    PCL_Utils::transformPoint(p, eigen_tf, p);
+
+    X = p.x;
+    Y = p.y;
+    Z = p.z;
+
+    std::cout << "POINT CAMERA LINK COORDINATES: "<<X<<","<<Y<<","<<Z<<std::endl;
+
     // ** Compute T
-    t_(0,0) = X - rot_3D(0,0)*pos_3D(0,0) - rot_3D(0,1)*pos_3D(1,0) - rot_3D(0,2)*pos_3D(2,0);
-    t_(1,0) = Y - rot_3D(1,0)*pos_3D(0,0) - rot_3D(1,1)*pos_3D(1,0) - rot_3D(1,2)*pos_3D(2,0);
-    t_(2,0) = Z - rot_3D(2,0)*pos_3D(0,0) - rot_3D(2,1)*pos_3D(1,0) - rot_3D(2,2)*pos_3D(2,0);
+    t_(0,0) = pos_3D(0,0) - rot_3D(0,0)*X - rot_3D(0,1)*Y - rot_3D(0,2)*Z;
+    t_(1,0) = pos_3D(1,0) - rot_3D(1,0)*X - rot_3D(1,1)*Y - rot_3D(1,2)*Z;
+    t_(2,0) = pos_3D(2,0) - rot_3D(2,0)*X - rot_3D(2,1)*Y - rot_3D(2,2)*Z;
 
     computed_t_ = true;
 }

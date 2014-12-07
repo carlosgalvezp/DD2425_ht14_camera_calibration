@@ -6,7 +6,7 @@
     <arg name="publish_tf" value="false"/>
  </include>
 
- <!-- Primensense TF -->
+ <!-- PrimeSense TF -->
   <include file="$(find object_detection)/launch/primesense_tf.launch">
  </include>
 

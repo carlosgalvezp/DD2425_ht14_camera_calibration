@@ -49,6 +49,7 @@
   <build_depend>message_filters</build_depend>
   <build_depend>tf</build_depend>
   <build_depend>tf_conversions</build_depend>
+  <build_depend>ras_srv_msgs</build_depend>
 
   <run_depend>cv_bridge</run_depend>
   <run_depend>pcl_conversions</run_depend>
@@ -59,6 +60,7 @@
   <run_depend>message_filters</run_depend>
   <run_depend>tf</run_depend>
   <run_depend>tf_conversions</run_depend>
+  <run_depend>ras_srv_msgs</run_depend>
 
 
   <!-- The export tag contains other, unspecified, tags -->
